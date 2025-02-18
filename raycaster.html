@@ -1,0 +1,442 @@
+<?xml version="1.0" encoding="UTF - 8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+   "http://www.w3.org/TR/xhtml11/DTD/html11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+   <head>
+      <title>Canvas Example</title> 
+      <style>
+	 body {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            height: 100vh;
+            background-color: #000000;
+	    overflow-y: hidden;
+	  .canvas{
+	
+		}
+      </style>  
+   </head>
+
+   <body>
+	<div>
+	<canvas id="topview" width="500" height="500" style="border:1px solid #FFFFFF;"></canvas> 
+	</div>
+   	<div>
+	<canvas id="fpsview" width="500" height="300" style="border:1px solid #FFFFFF;"></canvas>
+	</div>
+
+
+	<script>
+	//level map, 2D array, 1 is wall, 0 is open
+	//Counterintuitively, down on the map is left to right in the array, and right on the map
+	//is down in the array
+	const levelmap = [[1,1,1,1,1,1,1,1],
+		    [1,0,1,0,0,0,0,1],
+		    [1,0,1,1,1,0,0,1],
+		    [1,0,0,0,0,0,0,1], 
+		    [1,0,1,1,0,0,0,1],
+		    [1,0,0,1,0,0,0,1],
+		    [1,0,0,1,0,0,0,1],
+		    [1,1,1,1,1,1,1,1]];
+
+
+	//Now lets draw level grid next
+	//Grid blocks are at intervals of 10, for ease.
+
+	//Get context to canvases
+	var ctop = document.getElementById("topview");
+	var ctxtop = ctop.getContext("2d");  
+        var cfps = document.getElementById("fpsview");
+	var ctxfps = cfps.getContext("2d");
+
+	
+	//This function actually handles all of the drawing, it calls the player sprite
+        //and raycasting functions from within
+	//The arguments are:
+	//x,y - the player x and y position
+	//theta - the player angle
+	//ctx, ctop, cfps, ctxfps - the contexts for the canvases
+	//levelmap - the map array
+	//fov - the player's field of view angle in degrees
+
+	function drawgrid(x, y, theta, ctx, levelmap, ctop, fov, cfps, ctxfps){
+	   //clear the previous frames
+	   ctx.clearRect(0, 0, ctxtop.canvas.width, ctxtop.canvas.height); 
+	   ctxfps.clearRect(0, 0, ctxfps.canvas.width, ctxfps.canvas.height);
+	   
+	   //Draw grid	   
+	   ctx.strokeStyle = "white";
+           for(let i = 0; i < levelmap.length; i++){   
+	      ctx.beginPath();
+	      ctx.moveTo(ctop.width/levelmap.length*i, 0);
+	      
+	      ctx.lineTo(ctop.width/levelmap.length*i, ctop.width);
+	      ctx.stroke();
+              ctx.closePath();
+	   }
+           for(let i = 0; i < levelmap.length; i++){  
+	      ctx.beginPath();
+	      ctx.moveTo(0,ctop.height/levelmap.length*i);
+              
+	      ctx.lineTo(ctop.height,ctop.height/levelmap.length*i);
+	      ctx.stroke();
+	      ctx.closePath();
+	   }
+
+	   //Fill in solid blocks
+	   //Iterate through level map
+	   ctx.fillStyle = "white";
+	   for(let i = 0; i < levelmap.length; i++){
+	      for(let j = 0; j < levelmap.length; j++){
+	         if(levelmap[j][i] == 1){
+	            ctx.fillRect(ctop.width/levelmap.length*j,ctop.height/levelmap.length*i,
+			   ctop.width/levelmap.length,ctop.height/levelmap.length);
+	         }
+	      }
+	   }
+
+           //Draw player in top view
+	   //Player sprite is currently 20 pixels wide so add 10 to x and y for the position
+	   sprite(20, 20, "red", x+10, y+10, theta, ctx);
+	   //Draw rays in top view and all of fps view
+	   ray(20, 20, "green", x+10, y+10, theta, ctx, ctop, levelmap, fov, cfps, ctxfps);
+	   
+	}
+
+	//Player sprite component
+	//Width and height are size of sprite
+	//Color is obviously sprite color
+	//x and y are the sprite position (center)
+	//theta is the player angle
+	//ctx is the top view context
+
+	function sprite(width, height, color, x, y, theta, ctx) 
+	{
+	   
+    	   //Always start and end a line or shape with beginPath/closePath
+	   ctx.beginPath();
+	   //Arc for circle
+	   ctx.arc(x, y, width/2, 0, 2 * Math.PI);
+	   //Color and fill settings
+	   ctx.fillStyle = "red";
+	   ctx.fill();
+	   ctx.lineWidth = 4;
+	   ctx.strokeStyle = "red";
+	   //Draw
+	   ctx.stroke();
+	   //Finish by closing the path
+           ctx.closePath();
+	}
+
+	//Draw Rays and FPS view
+	//width and height are sprite size
+	//color is ray color
+	//x and y are player sprite position
+	//theta is player angle
+	//ctx and ctop are the top view context and top view element
+	//levelmap is the levelmap array
+	//fov is the field of view in degrees
+	//cfps and ctxfps are the fps context and view element
+	//This function draws the rays in the top view, showing the player fov and ray extents, and
+	//also draws the walls in the fps view
+
+	function ray(width, height, color, x, y, theta, ctx, ctop, levelmap, fov, cfps, ctxfps) 
+	{	   
+    	   //Need to loop for a number of times equal to the width of the canvas		
+	   for(viewx = 0; viewx < ctop.width; viewx++)
+	   {
+	      let maprange = 0;	//used to track range in the levelmap, an integer of array size or smaller
+	      let radx = 0, rady = 0; //radx and rady are distances calculated to gridlines
+	      let rangex = Infinity, rangey = Infinity, range = 0; //actual distances in view
+	      let mapx = 0, mapy = 0; //levelmap grid coordinates
+	      let mappos = [0,0]; //levelmap position
+	      let offx = 0, offy = 0; //offset for stepping through grid lines
+	      let tanra = 0, atanra = 0; //tangent and cotangent of angle
+	      
+	      //Compute ray angle, is player angle minus half field of view plus loop increment
+	      ra = (theta - (fov/2*Math.PI/180) + viewx/(ctop.width)*(fov*Math.PI/180) + .000001)%(Math.PI*2);
+	      
+	      //Tangent and cotangent
+	      tanra = Math.tan(ra);
+              atanra = 1/tanra;
+
+	      
+	      //Begin raycasting
+
+	      //**Check horizontal grid lines**
+
+	      //	     radx
+	      //     -------+-----+----- gridline
+	      //            |    /
+	      //            |   /ray length
+	      //      y-rady|  /
+	      //            | /
+	      //            |/
+	      //            *
+	      //
+	      //General picture of what is happening, this triangle changes direction depending on player
+	      //angle and if horizontal or vertical gridlines are checked, the image corresponds to checking
+	      //horizontal gridlines while facing upwards in the view.  Also, other directions change the 
+              //leg defintions to things like rady-y for facing down, x-radx, etc.
+
+	      //html canvas coordinates are increasing moving down and right.  Angle increases clockwise from pointing right.
+	      //Angle increments to values of 2*Pi or -2*Pi as the player turns, then resets to 0.  Therefore both positive and 
+	      //negative intervals must be tested for hits.
+	             
+	      if(((ra < 0) && (ra > -Math.PI )) || ((ra > 0) && (ra > Math.PI ))) //facing up in topview
+	      {
+		 //next horizontal line above player, note floor operation which discretizes the view into
+		 //a grid, ctop.height/levelmap.length essentially is a cell size in the grid, small amount deducted at 
+                 //the end to shift contact to lower side of wall
+	         rady=(Math.floor(y/(ctop.height/levelmap.length)))*(ctop.height/levelmap.length)-.0001;
+                 //x component of triangle formed by y-rady leg and total ray length hypotenuse
+                 radx=-(y-rady)*atanra+x;
+                 //offy is the distance to the next horizontal line in the grid, offx the next vertical
+	         offy=-(ctop.width/levelmap.length);
+	         offx=offy*atanra;
+	      }
+	      else if(((ra < Math.PI) && (ra >= 0)) || ((ra < -Math.PI) && (ra <= 0))) //facing down
+	      {
+	         //next horizontal line below player, note how this uses the floor division and then adds a grid space
+	         rady=(Math.floor(y/(ctop.height/levelmap.length)))*(ctop.height/levelmap.length)+(ctop.height/levelmap.length);
+	         //x component of triangle formed by rady-y leg and ray hypotenuse
+                 radx=(rady-y)*atanra+x;
+	         //offy and offx are the distances to the next grid lines
+	         offy=(ctop.width/levelmap.length);
+	         offx=offy*atanra;	      
+	      }
+	      else
+	      {
+	         //Angle not in range of interest
+	         radx = x;
+	         rady = y;
+	         maprange = levelmap.length;
+	      }
+	      
+	      
+	      //This loop basically checks to see if the ray has hit a wall
+	      while(maprange < levelmap.length && radx > 0 && rady > 0)
+	      {
+	         //Get grid position in levelmap
+                 mapx = Math.abs(Math.floor(radx/(ctop.width/levelmap.length)));
+	         mapy = Math.abs(Math.floor(rady/(ctop.height/levelmap.length)));
+	         mappos = [mapx, mapy];
+		 //If outside of levelmap break
+	         if((mapx >= levelmap.length) || (mapy >= levelmap.length))
+	         {
+		    break;
+	         }
+                 //Check for wall
+	         else if(levelmap[mapx][mapy] == 1)
+	         {
+	         
+		    maprange = levelmap.length;  //hit wall
+		    rangey = (rady-y)/Math.sin(ra);  //get range to wall
+	            
+	         }
+	         //increment to next grid intercept
+                 else 
+	         {
+		    radx = radx + offx;
+	            rady = rady + offy;
+		    maprange = maprange + 1;
+	         }
+	      }
+
+	      //**Check vertical grid lines**
+
+	      //	               |grid line
+	      //                 radx-x|     
+	      //                 ------|
+	      //                  \    |
+	      //                   \   |rady
+	      //               ray  \  |
+	      //                     \ | 
+	      //                      \|
+	      //
+	      //General picture of what is happening, this triangle changes direction depending on player
+	      //angle, the image corresponds to checking right side gridlines in the top view.  The triangle
+              //will of course be a little different when checking left side grid lines.
+
+	      //html canvas coordinates are increasing moving down and right.  Angle increases clockwise from pointing right.
+	      //Angle increments to values of 2*Pi or -2*Pi as the player turns, then resets to 0.  Therefore both positive and 
+	      //negative intervals must be tested for hits.
+
+	      //reset maprange
+	      maprange = 0;
+
+	      //Angle is facing right in top view
+	      if((((ra < 0) && (ra > -Math.PI/2 )) || ((ra < 0) && (ra < -3*Math.PI/2 ))) || (((ra > 0) && (ra < Math.PI/2 )) ||
+		((ra > 0) && (ra > 3*Math.PI/2 )))) //facing right
+	      {
+		 //next vertical line right of player, note floor operation which discretizes the view into
+		 //a grid, ctop.width/levelmap.length essentially is a cell size in the grid, grid cell width added at
+                 //end to shift gridline to right side of position cell.
+                 radx=(Math.floor(x/(ctop.width/levelmap.length)))*(ctop.width/levelmap.length)+(ctop.width/levelmap.length);
+                 //y component of triangle formed by ray and radx-x (gridline-xpos)
+                 rady=(radx-x)*tanra+y;
+                 //offset distances for next gridline intercepts by ray
+	         offx=(ctop.width/levelmap.length);
+	         offy=offx*tanra;
+	      }
+	      else if(((ra > -3*Math.PI/2) && (ra < -Math.PI/2 )) || ((ra > Math.PI/2 ) && (ra < 3*Math.PI/2 ))) //facing left
+	      {
+		 //next vertical line left of player, note floor operation which discretizes the view into
+		 //a grid, ctop.width/levelmap.length essentially is a cell size in the grid, small amount subtracted at
+                 //end to shift gridline to left side of cell.	         
+                 radx=(Math.floor(x/(ctop.width/levelmap.length)))*(ctop.width/levelmap.length)-.0001;
+	         //y component of triangle formed by ray and x-radx (xpos-gridline)
+                 rady=-(x-radx)*tanra+y;
+	         //offset distances for next gridline intercepts by ray
+	         offx=-(ctop.width/levelmap.length);
+	         offy=offx*tanra; 
+	      }
+	      else
+	      {
+	         //Angle outside range of interest
+		 radx = x;
+	         rady = y;
+	         maprange = levelmap.length;
+	      }
+	      
+	      //This loop basically checks to see if the ray has hit a wall
+	      while(maprange < levelmap.length && radx > 0 && rady > 0)
+	      {
+	         //Get grid position in levelmap
+	         mapx = Math.abs(Math.floor(radx/(ctop.width/levelmap.length)));
+	         mapy = Math.abs(Math.floor(rady/(ctop.height/levelmap.length)));
+	         mappos = [mapx, mapy];
+		 //Break if beyond map border
+	         if((mapx >= levelmap.length) || (mapy >= levelmap.length))
+	         {
+		    break;
+	         }
+	         //Check for wall
+	         else if(levelmap[mapx][mapy] == 1)
+	         {
+	         
+		    maprange = levelmap.length;  //hit wall
+		    rangex = (radx-x)/Math.cos(ra);
+	         }
+		 //Increment to next grid intercept
+                 else 
+	         {
+		    radx = radx + offx;
+	            rady = rady + offy;
+		    maprange = maprange + 1;
+	         }
+	      }
+	      
+	      //Set colors for fps view drawing, change hue based on if hit is
+              //horizontal or vertical to give lighting effect
+	      let fpscolor = "#000000";
+	      if (rangex < rangey)
+	      {
+	         range = rangex;
+	         fpscolor = "#0000FF";
+	      }
+	      else
+	      {
+	         range = rangey;
+	         fpscolor = "#000080";
+	      }
+
+	      //Draw rays in topview
+              //Save context, move to player position, rotate to ray angle, draw horizontal
+              //line of appropriate length, then undo rotate/translate
+	      ctx.save();
+    	      ctx.translate(x+width/2-10, y+height/2-10);
+    	      ctx.rotate(ra);
+   	      ctx.beginPath();  	   
+	      ctx.strokeStyle = color; 
+	      ctx.moveTo(0,0);
+	      ctx.lineTo(range,0);
+	      ctx.stroke();
+	      ctx.closePath();
+   	      ctx.translate(-x-width/2+10, -y-height/2+10);
+    	      ctx.restore();
+	   
+
+	      //Draw 3D view
+	      //fisheye fix
+	      range = (range)*Math.cos(theta - ra);
+              //The coefficient in lineH sort of adjusts the wall height
+	      let lineH = (20)/(range)*cfps.height/2;
+              //Limit wall height
+	      if (lineH > cfps.height) {lineH = cpfs.height;}
+	      //This is an offset from the canvas top to the top of the wall
+              let lineOff = cfps.height-(cfps.height/2-lineH/2);
+              //Draw line from wall top to wall bottom, height lineH
+   	      ctxfps.beginPath();  	   
+	      ctxfps.strokeStyle = fpscolor; 
+	      ctxfps.moveTo(viewx,lineOff);
+	      ctxfps.lineTo(viewx,(lineOff-lineH));
+	      ctxfps.stroke();
+	      ctxfps.closePath();
+	   }
+	}
+
+	//Initial player position and angle
+	let playerPos = [ctop.width/2+10, ctop.height/2+10];
+	let playerAngle = 0;
+	
+	//Keyboard event listener
+        window.addEventListener('keydown', (e) => {check(e, levelmap, ctop)});
+        
+	//Keyboard event handler
+	function check(e, levelmap, ctop) {
+    	   var code = e.keyCode;
+           
+    	   switch (code) {
+              case 37: //Left key rotates left
+		playerAngle = (playerAngle - .1) % (2 * Math.PI); break; 
+              case 38: //Up key moves forward
+                //clipx and clip y are used to prevent the player sprite from overlapping the wall
+                var clipx = -5;
+                if (Math.cos(playerAngle) >= 0){clipx = 25;}      
+                var clipy = -5;
+                if (Math.sin(playerAngle) >= 0){clipy = 25;}
+                //Move to new position if no wall collision
+		newPosx = playerPos[0] + Math.cos(playerAngle); 
+		newPosy = playerPos[1] + Math.sin(playerAngle); 
+		//Do some simple collision checking for wall when moving
+		if(levelmap[Math.floor((newPosx+clipx)/(ctop.width/levelmap.length))][Math.floor((newPosy+clipy)/(ctop.height/levelmap.length))] == 0)
+		{
+		   playerPos[0] = newPosx;
+		   playerPos[1] = newPosy;
+		}
+		break; 
+              case 39: //Right key rotates right
+		playerAngle = (playerAngle + .1) % (2 * Math.PI); break; 
+              case 40: //Down key moves backwards
+                //clipx and clipy are wall overlap buffers
+                var clipx = -5;
+                if (Math.cos(playerAngle) <= 0){clipx = 25;}
+                var clipy = -5;
+                if (Math.sin(playerAngle) <= 0){clipy = 25;}
+                //If not wall collision move to new position                
+		newPosx = playerPos[0] - Math.cos(playerAngle); 
+		newPosy = playerPos[1] - Math.sin(playerAngle); 
+                //Do some simple collision checking for wall when moving
+		if(levelmap[Math.floor((newPosx+clipx)/(ctop.width/levelmap.length))][Math.floor((newPosy+clipy)/(ctop.height/levelmap.length))] == 0)
+		{
+		   playerPos[0] = newPosx;
+		   playerPos[1] = newPosy;
+		}
+		break; 
+              default: alert(code); //Everything else
+    	   }
+	}	
+	
+	//Set field of view
+	let fov = 60 //60 degree field of view;
+
+	//Set interval for game update and start after page loads
+	window.addEventListener('load', () => {setInterval(() => drawgrid(playerPos[0], playerPos[1], playerAngle, ctxtop, levelmap, ctop, fov, cfps, ctxfps), 50)});
+    	
+
+	</script>
+   </body>
+</html>
